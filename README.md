@@ -1,3 +1,56 @@
+# marker — tsevis fork
+
+**This is a fork of [datalab-to/marker](https://github.com/datalab-to/marker)**, the document
+conversion library by [Datalab](https://www.datalab.to). All of the document intelligence — the
+models, the conversion pipeline, the renderers — is their work. Upstream's own README follows
+below, unchanged.
+
+This fork tracks upstream `master` and adds a desktop GUI plus a handful of durability fixes for
+long batch runs. It is personal tooling, not a competing distribution: if you want marker, get it
+[from upstream](https://github.com/datalab-to/marker).
+
+## What this fork adds
+
+**A desktop GUI** (`convert_gui.py`, `marker_worker.py`, `marker_progress.py`)
+
+- A Tkinter front end for single-file and batch conversion, so a conversion does not need a
+  terminal.
+- A persistent worker process that loads the models once and converts many files, instead of
+  paying model load on every file.
+- Apple Silicon tuning — batch sizes and detector workers chosen from available unified memory.
+- Real progress reporting. marker 2.0.0 runs in fast mode by default on CPU and MPS, and that
+  path emits no per-stage progress at all, so the worker reports the phases the converter
+  actually runs: the analysis pass, each processor, the render, the save.
+
+**Batch durability fixes** (in `marker/`)
+
+- Outputs are written atomically, so an interrupted run cannot leave a half-written file that
+  `--skip_existing` would later mistake for a finished one.
+- `--skip_existing` checks for output *in the format being converted to*. Converting a folder to
+  markdown and rerunning with `--output_format json --skip_existing` now converts the files
+  rather than skipping them because a `.md` sits beside them.
+- A failed batch writes `conversion_failures.json` listing each failed file with its error, so a
+  long run tells you what to retry instead of only how many failed.
+- A PDF that cannot be read is named in a clear error, rather than failing somewhere inside
+  PDFium.
+- Font glyph variants resolve correctly, and layout-only characters are dropped from the text.
+
+## Changes to upstream files
+
+As required by the Apache License 2.0, section 4(b): files under `marker/` have been modified in
+this fork. The changes are those listed above — `marker/output.py`, `marker/scripts/convert.py`,
+`marker/providers/pdf.py`, and the added `marker/providers/preflight.py`,
+`marker/providers/text_cleanup.py`, and `marker/scripts/batch_outcomes.py`. Everything else is
+upstream's, unmodified.
+
+## License
+
+Unchanged from upstream: the code is under the **Apache License 2.0** (see `LICENSE`), and the
+models are under the **OpenRAIL-M** license (see `MODEL_LICENSE`), which carries use restrictions
+of its own. This fork adds no license terms.
+
+<hr/>
+
 <p align="center">
   <img src="data/images/datalab-logo.png" alt="Datalab Logo" width="150"/>
 </p>
