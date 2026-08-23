@@ -111,7 +111,10 @@ class MarkerWorker:
         return False, reply.get("error") or "Worker stopped unexpectedly."
 
     def _read_reply(self) -> dict:
-        """Read one JSON line from the worker; {} if it died.
+        """Read the worker's next reply, forwarding any progress it reports first.
+
+        The worker interleaves {"progress": ...} lines with the reply to a
+        request, so this consumes them until an actual reply arrives.
 
         Binds the process locally: a concurrent stop() may clear self.proc while
         this call is parked in readline().
@@ -119,13 +122,23 @@ class MarkerWorker:
         proc = self.proc
         if proc is None:
             return {}
-        line = proc.stdout.readline()
-        if not line:
-            return {"error": "\n".join(self.tail[-12:]) or "Worker exited unexpectedly."}
-        try:
-            return json.loads(line)
-        except json.JSONDecodeError:
-            return {"error": f"Unexpected worker output: {line[:200]!r}"}
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                return {
+                    "error": "\n".join(self.tail[-12:])
+                    or "Worker exited unexpectedly."
+                }
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                return {"error": f"Unexpected worker output: {line[:200]!r}"}
+            if not isinstance(message, dict):
+                return {"error": f"Unexpected worker output: {line[:200]!r}"}
+            progress = message.get("progress")
+            if progress is None:
+                return message
+            self.emit("progress", progress)
 
     def _drain_stderr(self, proc: subprocess.Popen) -> None:
         """Background thread: parse tqdm bars into progress events."""
@@ -261,7 +274,7 @@ class SingleTab(ttk.Frame):
         pct = int(info["pct"])
         cur, total = info["cur"], info["total"]
         self.progress["value"] = pct
-        unit = "page" if total == "1" else "pages"
+        unit = info.get("unit") or ("page" if total == "1" else "pages")
         self.status.set(f"{info['desc']} — {cur}/{total} {unit} ({pct}%)")
 
     def _finish(self, message: str, success: bool, detail: str | None = None) -> None:
@@ -489,7 +502,7 @@ class BatchTab(ttk.Frame):
         pct = int(info["pct"])
         cur, total = info["cur"], info["total"]
         self.progress["value"] = pct
-        unit = "page" if total == "1" else "pages"
+        unit = info.get("unit") or ("page" if total == "1" else "pages")
         prefix = self.status.get().split(" — ")[0]
         self.status.set(f"{prefix} — {info['desc']} {cur}/{total} {unit} ({pct}%)")
 

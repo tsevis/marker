@@ -102,23 +102,42 @@ def apply_tuning() -> dict[str, str]:
     return tuning
 
 
-def convert_one(models: dict, pdf: str, out_dir: str) -> str:
-    """Convert a single PDF with already-loaded models. Returns the markdown path."""
+def convert_one(models: dict, pdf: str, out_dir: str, on_progress=None) -> str:
+    """Convert a single PDF with already-loaded models. Returns the markdown path.
+
+    `on_progress`, when given, receives a ProgressEvent for each phase the
+    converter runs: the analysis pass, every processor, the render, the save.
+    """
     from marker.config.parser import ConfigParser
     from marker.output import save_output
 
+    from marker_progress import (
+        SAVE_DESC,
+        ProgressReporter,
+        plan_total,
+        progress_converter_cls,
+    )
+
     config_parser = ConfigParser({"output_dir": out_dir, "output_format": "markdown"})
-    converter = config_parser.get_converter_cls()(
+    converter_cls = progress_converter_cls(config_parser.get_converter_cls())
+    converter = converter_cls(
         config=config_parser.generate_config_dict(),
         artifact_dict=models,
         processor_list=config_parser.get_processors(),
         renderer=config_parser.get_renderer(),
         llm_service=config_parser.get_llm_service(),
     )
+    reporter = None
+    if on_progress is not None:
+        reporter = ProgressReporter(plan_total(converter), on_progress)
+        converter.attach_progress(reporter)
+
     rendered = converter(pdf)
     out_folder = config_parser.get_output_folder(pdf)
     base = config_parser.get_base_filename(pdf)
     save_output(rendered, out_folder, base)
+    if reporter is not None:
+        reporter.step(SAVE_DESC)
     return str(Path(out_folder) / f"{base}.md")
 
 
@@ -161,7 +180,12 @@ def main() -> None:
             reply({"ok": False, "error": f"Bad request: {e}"})
             continue
         try:
-            out = convert_one(models, request["pdf"], request["out_dir"])
+            out = convert_one(
+                models,
+                request["pdf"],
+                request["out_dir"],
+                on_progress=lambda event: reply({"progress": event.as_payload()}),
+            )
             logger.info(f"Saved markdown to {out}")
             reply({"ok": True, "out": out})
         except Exception as e:  # noqa: BLE001 - one bad file must not kill the worker
