@@ -5,6 +5,10 @@ on: [push]
 jobs:
   tests:
     runs-on: t4_gpu
+    # Upstream only: needs the `t4_gpu` self-hosted runner and the HF_TOKEN
+    # secret for the gated sample corpus. A fork has neither, so this would
+    # queue forever as a pending check. See fork-cpu-tests.yml.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install apt requirements
@@ -32,6 +36,9 @@ jobs:
   # pdftext) that the GPU job can't - it never exercises the no-GPU path.
   tests-cpu:
     runs-on: ubuntu-latest
+    # Upstream only: on a fork this is superseded by fork-cpu-tests.yml, which
+    # runs the same subset without requiring the HF_TOKEN secret.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install apt requirements

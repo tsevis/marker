@@ -9,6 +9,10 @@ env:
 jobs:
   tests:
     runs-on: t4_gpu
+    # Upstream only: needs the `t4_gpu` self-hosted runner and the HF_TOKEN
+    # secret for the gated sample corpus. A fork has neither, so this would
+    # queue forever as a pending check. See fork-cpu-tests.yml.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
