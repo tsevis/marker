@@ -1,0 +1,47 @@
+# Fork-only CI.
+#
+# Upstream's `ci.yml` needs a `t4_gpu` self-hosted runner and an `HF_TOKEN`
+# secret for the gated `datalab-to/pdfs` sample corpus; this fork has neither,
+# so that workflow cannot run here. This one runs the `cpu`-marked subset on a
+# stock runner instead: imports, config parsing, providers, and the sample
+# document resolution in `tests/dataset.py`.
+#
+# Without the corpus the document-conversion tests skip rather than error, so
+# `-rs` prints every skip reason -- a green run that tested nothing stays
+# visible in the log. Set an `HF_TOKEN` secret, or commit documents to
+# `tests/data/pdfs/`, to turn those skips into real runs.
+
+name: Fork CPU tests
+
+on:
+  push:
+    branches: [marker-2.0.0-patches]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests-cpu:
+    # Fork only; upstream has its own CI.
+    if: github.repository != 'datalab-to/marker'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install apt requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libharfbuzz0b libpangoft2-1.0-0 libgdk-pixbuf2.0-0 libcairo2 libffi-dev shared-mime-info
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+          enable-cache: true
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install python dependencies
+        run: uv sync --frozen --group dev --extra full
+      - name: Run CPU tests
+        env:
+          # Optional: absent on a fork without the secret, in which case the
+          # corpus-backed tests skip with a reason instead of failing.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run pytest -m "cpu and not integration" -rs

@@ -35,12 +35,25 @@ long batch runs. It is personal tooling, not a competing distribution: if you wa
   PDFium.
 - Font glyph variants resolve correctly, and layout-only characters are dropped from the text.
 
+**A test suite that runs without the gated sample corpus** (in `tests/`)
+
+- The sample documents live in the `datalab-to/pdfs` dataset, which is gated — the Hub answers
+  401 without an access token, which used to error 70 tests out of fixture setup.
+- Documents now resolve from a local directory (`MARKER_TEST_PDF_DIR`, default
+  `tests/data/pdfs/`) before the Hub, so a populated directory runs the suite with no Hub access
+  at all.
+- When neither source has a document the test **skips with a reason** naming the file and both
+  sources, instead of erroring. See [`tests/README.md`](tests/README.md) for token setup and the
+  list of documents the suite asks for.
+
 ## Changes to upstream files
 
-As required by the Apache License 2.0, section 4(b): files under `marker/` have been modified in
-this fork. The changes are those listed above — `marker/output.py`, `marker/scripts/convert.py`,
-`marker/providers/pdf.py`, and the added `marker/providers/preflight.py`,
-`marker/providers/text_cleanup.py`, and `marker/scripts/batch_outcomes.py`. Everything else is
+As required by the Apache License 2.0, section 4(b): files under `marker/` and `tests/` have been
+modified in this fork. The changes are those listed above — `marker/output.py`,
+`marker/scripts/convert.py`, `marker/providers/pdf.py`, and the added
+`marker/providers/preflight.py`, `marker/providers/text_cleanup.py`, and
+`marker/scripts/batch_outcomes.py`; in the test suite, `tests/conftest.py`, `tests/utils.py`,
+`tests/builders/test_overriding.py`, and the added `tests/dataset.py`. Everything else is
 upstream's, unmodified.
 
 ## License

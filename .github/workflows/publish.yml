@@ -6,6 +6,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Upstream only. A v*.*.* tag on a fork must never publish to PyPI under
+    # upstream's `marker-pdf` name.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
