@@ -1,5 +1,12 @@
 # marker — tsevis fork
 
+[![Fork CPU tests](https://github.com/tsevis/marker/actions/workflows/fork-cpu-tests.yml/badge.svg?branch=marker-2.0.0-patches)](https://github.com/tsevis/marker/actions/workflows/fork-cpu-tests.yml)
+[![Release](https://img.shields.io/github/v/release/tsevis/marker?label=release&color=blue)](https://github.com/tsevis/marker/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://github.com/tsevis/marker/blob/marker-2.0.0-patches/pyproject.toml)
+[![Code License](https://img.shields.io/badge/Code%20License-Apache%202.0-green.svg)](https://github.com/tsevis/marker/blob/marker-2.0.0-patches/LICENSE)
+[![Model License](https://img.shields.io/badge/Model%20License-OpenRAIL--M-blue.svg)](https://github.com/tsevis/marker/blob/marker-2.0.0-patches/MODEL_LICENSE)
+[![Fork of datalab-to/marker](https://img.shields.io/badge/fork%20of-datalab--to%2Fmarker-lightgrey?logo=github)](https://github.com/datalab-to/marker)
+
 **This is a fork of [datalab-to/marker](https://github.com/datalab-to/marker)**, the document
 conversion library by [Datalab](https://www.datalab.to). All of the document intelligence — the
 models, the conversion pipeline, the renderers — is their work. Upstream's own README follows
