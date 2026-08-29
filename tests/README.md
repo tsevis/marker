@@ -26,7 +26,7 @@ naming the file and both sources** rather than erroring.  A full run then looks
 like:
 
 ```
-72 passed, 73 skipped, 3 deselected
+86 passed, 73 skipped, 3 deselected
 ```
 
 `tests/dataset.py` resolves each document from two sources, in order.
