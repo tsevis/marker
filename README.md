@@ -157,6 +157,17 @@ If you want to use marker on documents other than PDFs, you will need to install
 pip install marker-pdf[full]
 ```
 
+## Inference backend prerequisites
+
+Surya auto-spawns the server on first use, and you need `vllm` (NVIDIA GPU) or `llama.cpp` (CPU / Apple Silicon):
+
+- **NVIDIA GPU:** [Docker](https://docs.docker.com/get-docker/) plus the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- **CPU / Apple Silicon:** the `llama-server` binary from llama.cpp:
+  ```shell
+  brew install llama.cpp     # macOS
+  # or grab a release from https://github.com/ggml-org/llama.cpp/releases
+  ```
+
 # Usage
 
 First, some configuration:
