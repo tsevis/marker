@@ -9,6 +9,9 @@ env:
 jobs:
   tests:
     runs-on: t4_gpu
+    # Upstream only: the `t4_gpu` runner does not exist on a fork, so this
+    # job would queue until the 24h timeout cancelled it.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

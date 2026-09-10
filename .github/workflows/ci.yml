@@ -5,6 +5,11 @@ on: [push]
 jobs:
   tests:
     runs-on: t4_gpu
+    # Upstream only: needs the `t4_gpu` self-hosted runner and the HF_TOKEN
+    # secret for the gated sample corpus. A fork has neither, so this queues
+    # until GitHub cancels it at the 24h queue timeout -- a pending check
+    # that never resolves and never says why.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install apt requirements
@@ -32,6 +37,11 @@ jobs:
   # pdftext) that the GPU job can't - it never exercises the no-GPU path.
   tests-cpu:
     runs-on: ubuntu-latest
+    # Upstream only: the `cpu` subset still pulls the gated datalab-to/pdfs
+    # corpus, so without HF_TOKEN it fails with DatasetNotFoundError. The
+    # token-free replacement is fork-cpu-tests.yml, which exists only on
+    # marker-2.0.0-patches -- this branch has no CI of its own.
+    if: github.repository == 'datalab-to/marker'
     steps:
       - uses: actions/checkout@v4
       - name: Install apt requirements
