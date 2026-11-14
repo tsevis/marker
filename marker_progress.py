@@ -6,9 +6,9 @@ The GUI used to scrape those bars off stderr, so its progress bar sat at zero
 for the whole conversion.
 
 Rather than parse output that is no longer produced, report the phases the
-converter actually performs -- the analysis pass, every processor in its
-pipeline, then rendering and saving -- and push them to the GUI as ordinary
-worker events.
+converter actually performs -- the analysis pass and the layout, text-line and
+OCR stages inside it, every processor in its pipeline, then rendering and
+saving -- and push them to the GUI as ordinary worker events.
 
 Nothing here mutates what it is given: `wrap_processors` returns a new list,
 and the converter subclass is built fresh from whatever class marker resolved.
@@ -26,6 +26,15 @@ FIXED_PHASES = 3
 ANALYZE_DESC = "Analyzing"
 RENDER_DESC = "Rendering"
 SAVE_DESC = "Saving"
+
+# The analysis pass is where the models run, so it is most of a conversion.
+# Each builder marker resolves for it is reported as its own step; matching is
+# by class name so this module never has to import marker.
+STAGE_DESCS = {
+    "LayoutBuilder": "Layout",
+    "LineBuilder": "Text lines",
+    "OcrBuilder": "OCR",
+}
 
 # Processor class names are pipeline jargon; the GUI shows a plain noun.
 _PROCESSOR_SUFFIX = "Processor"
@@ -87,6 +96,19 @@ def friendly_name(processor: Any) -> str:
     return name
 
 
+def stage_desc(builder: Any) -> str | None:
+    """The step name for an analysis builder, or None for anything else.
+
+    Subclasses count as the stage they extend, so a custom layout builder is
+    still reported as layout.
+    """
+    for cls in type(builder).__mro__:
+        desc = STAGE_DESCS.get(cls.__name__)
+        if desc is not None:
+            return desc
+    return None
+
+
 class _ReportingProcessor:
     """Calls a processor, reporting it first, and otherwise stays out of the way.
 
@@ -94,10 +116,12 @@ class _ReportingProcessor:
     forwards everything it does not define itself.
     """
 
-    def __init__(self, processor: Any, reporter: ProgressReporter):
+    def __init__(
+        self, processor: Any, reporter: ProgressReporter, desc: str | None = None
+    ):
         self._processor = processor
         self._reporter = reporter
-        self._desc = friendly_name(processor)
+        self._desc = friendly_name(processor) if desc is None else desc
 
     def __call__(self, *args, **kwargs):
         self._reporter.step(self._desc)
@@ -120,7 +144,7 @@ def wrap_processors(
 def plan_total(converter: Any) -> int:
     """How many phases a conversion with this converter will report."""
     processors: Sequence[Any] = getattr(converter, "processor_list", None) or ()
-    return len(processors) + FIXED_PHASES
+    return len(processors) + len(STAGE_DESCS) + FIXED_PHASES
 
 
 def progress_converter_cls(base_cls: type) -> type:
@@ -139,6 +163,16 @@ def progress_converter_cls(base_cls: type) -> type:
             self._reporter = reporter
             self.processor_list = wrap_processors(self.processor_list, reporter)
             return self
+
+        def resolve_dependencies(self, cls):
+            """Report the analysis builders as they run; pass the rest through."""
+            resolved = super().resolve_dependencies(cls)
+            if self._reporter is None:
+                return resolved
+            desc = stage_desc(resolved)
+            if desc is None:
+                return resolved
+            return _ReportingProcessor(resolved, self._reporter, desc)
 
         def build_document(self, filepath):
             if self._reporter is not None:

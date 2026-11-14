@@ -140,12 +140,13 @@ def test_a_wrapped_processor_returns_what_the_processor_returned():
 
 
 def test_the_plan_counts_every_processor_plus_the_fixed_phases():
-    """Analysis, rendering and saving bracket the processor pipeline."""
+    """Analysis, rendering and saving bracket the pipeline; the analysis pass
+    itself reports layout, text lines and OCR as three more steps."""
 
     class Converter:
         processor_list = [1, 2, 3]
 
-    assert plan_total(Converter()) == 6
+    assert plan_total(Converter()) == 9
 
 
 # --- progress_converter_cls --------------------------------------------------
@@ -282,3 +283,76 @@ def test_the_progress_payload_the_worker_sends_is_what_the_gui_renders():
     assert int(payload["pct"]) == 30
     assert payload["cur"] == "3" and payload["total"] == "10"
     assert payload["unit"] == "steps"
+
+
+# --- analysis stages ---------------------------------------------------------
+
+
+class LayoutBuilder:
+    def __call__(self, document, provider):
+        return "layout ran"
+
+
+class LineBuilder(LayoutBuilder):
+    pass
+
+
+class OcrBuilder(LayoutBuilder):
+    pass
+
+
+class LLMLayoutBuilder(LayoutBuilder):
+    pass
+
+
+class StructureBuilder:
+    """Not an analysis stage: it must pass through unreported."""
+
+    def __call__(self, document, provider):
+        return None
+
+
+class FakeStagedConverter(FakeConverter):
+    """Resolves its builders the way marker's PdfConverter does."""
+
+    layout_cls = LayoutBuilder
+
+    def resolve_dependencies(self, cls):
+        return cls()
+
+    def build_document(self, filepath):
+        stages = [
+            self.resolve_dependencies(c)
+            for c in (self.layout_cls, LineBuilder, OcrBuilder, StructureBuilder)
+        ]
+        for stage in stages:
+            stage("document", "provider")
+        return super().build_document(filepath)
+
+
+def staged(seen, converter_cls=FakeStagedConverter):
+    converter = progress_converter_cls(converter_cls)()
+    converter.processor_list = [named("TableProcessor", [])]
+    converter.attach_progress(ProgressReporter(plan_total(converter), seen.append))
+    return converter
+
+
+def test_the_analysis_pass_reports_layout_lines_and_ocr_separately():
+    """Catches the bar sitting on step 1 for the whole model pass."""
+    seen = []
+    staged(seen).build_document("doc.pdf")
+
+    assert [e.desc for e in seen] == [
+        "Analyzing", "Layout", "Text lines", "OCR", "Table", "Rendering",
+    ]
+
+
+def test_a_subclassed_layout_builder_is_still_reported_as_layout():
+    class Converter(FakeStagedConverter):
+        layout_cls = LLMLayoutBuilder
+
+    seen = []
+    staged(seen, Converter).build_document("doc.pdf")
+
+    assert "Layout" in [e.desc for e in seen]
+
