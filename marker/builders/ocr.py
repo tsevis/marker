@@ -237,14 +237,21 @@ class OcrBuilder(BaseBuilder):
                     .fit_to_bounds((0, 0, *page_size))
                 )
 
+                html = (
+                    "" if block_result.skipped else self.clean_html(block_result.html)
+                )
+                if self.is_image_only_html(html):
+                    # The model located a picture but filed it under a text
+                    # label. Keep the region as a Picture so the renderer
+                    # crops it, instead of emitting an <img> with no source.
+                    block_type, html = BlockTypes.Picture, ""
+
                 block_cls = get_block_class(block_type)
                 block = page.add_block(block_cls, polygon)
                 block.structure = []
                 block.text_extraction_method = "surya"
-                if not block_result.skipped:
-                    html = self.clean_html(block_result.html)
-                    if html:
-                        block.html = html
+                if html:
+                    block.html = html
                 new_structure.append(block.id)
 
             # Retire the layout blocks the page structure previously pointed to
@@ -282,6 +289,14 @@ class OcrBuilder(BaseBuilder):
                 block.html = html
                 block.structure = []
                 block.text_extraction_method = "surya"
+
+    @staticmethod
+    def is_image_only_html(html: str) -> bool:
+        """True for block HTML that holds an image and no text at all."""
+        if not html:
+            return False
+        soup = BeautifulSoup(html, "html.parser")
+        return soup.find("img") is not None and not soup.get_text(strip=True)
 
     def clean_html(self, html: str) -> str:
         """Clean VLM block HTML: strip debug attributes, balance truncated

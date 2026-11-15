@@ -1,4 +1,4 @@
-from typing import Annotated, Sequence
+from typing import Annotated, List, Sequence
 
 from marker.builders import BaseBuilder
 from marker.builders.layout import LayoutBuilder
@@ -8,6 +8,7 @@ from marker.providers.pdf import PdfProvider
 from marker.schema import BlockTypes
 from marker.schema.document import Document
 from marker.schema.groups.page import PageGroup
+from marker.schema.polygon import PolygonBox
 from marker.schema.registry import get_block_class
 
 
@@ -32,6 +33,29 @@ class DocumentBuilder(BaseBuilder):
         bool,
         "Disable OCR processing.",
     ] = False
+
+    keep_image_only_pages: Annotated[
+        bool,
+        "Keep a page that has no text layer (a cover, a plate) as a full-page",
+        "picture, in a document whose other pages do have one.",
+    ] = True
+    image_only_page_max_share: Annotated[
+        float,
+        "Largest share of textless pages for which they are kept as pictures.",
+        "Above it the document is a scan, not a text PDF with a few plates.",
+    ] = 0.25
+    blank_page_tone_range: Annotated[
+        int,
+        "A page whose darkest and lightest pixels differ by less than this",
+        "(0-255) is blank and is not kept as a picture.",
+    ] = 16
+    image_block_types: Annotated[
+        Sequence[BlockTypes],
+        "Partial pictures that a full-page picture replaces on such a page.",
+    ] = (
+        BlockTypes.Picture,
+        BlockTypes.Figure,
+    )
 
     # Block types whose default-path processors crop the high-res image:
     # TableProcessor (Table/TableOfContents/Form) and EquationProcessor
@@ -66,7 +90,52 @@ class DocumentBuilder(BaseBuilder):
         self.render_highres(document, provider)
         if not self.disable_ocr:
             ocr_builder(document, provider)
+        self.add_image_only_page_pictures(
+            document, self.image_only_page_ids(document, provider)
+        )
         return document
+
+    def image_only_page_ids(self, document: Document, provider: PdfProvider) -> List[int]:
+        """Pages to keep as full-page pictures: textless pages of a text PDF.
+
+        Applies with OCR on as well: OCR reads the lettering on a cover, but
+        the picture it locates there can be a fragment (only the title box).
+        """
+        if not self.keep_image_only_pages:
+            return []
+        pages = document.pages
+        textless = [
+            page.page_id for page in pages if not provider.page_lines.get(page.page_id)
+        ]
+        if not pages or len(textless) / len(pages) > self.image_only_page_max_share:
+            return []
+        return textless
+
+    def add_image_only_page_pictures(self, document: Document, page_ids: Sequence[int]):
+        """Put a full-page Picture at the top of each listed page.
+
+        Blank pages are skipped. Partial pictures already on the page are
+        dropped from its structure, since the whole page now covers them.
+        """
+        wanted = set(page_ids)
+        picture_cls = get_block_class(BlockTypes.Picture)
+        for page in document.pages:
+            if page.page_id not in wanted or self.page_is_blank(page):
+                continue
+            kept = []
+            for block in page.structure_blocks(document):
+                if block.block_type in self.image_block_types:
+                    block.removed = True
+                else:
+                    kept.append(block.id)
+            picture = page.add_block(
+                picture_cls, PolygonBox.from_bbox(page.polygon.bbox)
+            )
+            page.structure = [picture.id, *kept]
+
+    def page_is_blank(self, page: PageGroup) -> bool:
+        darkest, lightest = page.get_image(highres=False).convert("L").getextrema()
+        return lightest - darkest < self.blank_page_tone_range
 
     def page_needs_highres(self, page: PageGroup) -> bool:
         if page.text_extraction_method == "surya":
