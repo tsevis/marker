@@ -155,7 +155,7 @@ def test_single_and_batch_keep_the_settings_captured_at_start(tmp_path):
     calls = []
     app = SimpleNamespace(image_settings=selected)
 
-    def convert(pdf, out_dir, options):
+    def convert(pdf, out_dir, options, skip_ocr=False):
         calls.append((pdf, options))
         # Simulate someone changing the Settings tab while a file is running.
         app.image_settings = ImageExportSettings(600)

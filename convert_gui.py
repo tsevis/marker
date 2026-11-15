@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from marker.image_export import ImageExportSettings, scaled_image_size
+from marker_textlayer import TextLayerReport, inspect_text_layer
 
 ROOT = Path(__file__).parent
 VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
@@ -26,6 +27,8 @@ TQDM_RE = re.compile(r"^(?P<desc>.+?):\s+(?P<pct>\d+)%\|.*?\|\s*(?P<cur>\d+)/(?P
 DONE_RE = re.compile(r"Saved markdown to (?P<path>.+)$")
 
 MUTED = "#6b7280"
+SKIP_OCR_LABEL = "Skip OCR and use the PDF's own text (faster)"
+BATCH_SKIP_OCR_LABEL = "Skip OCR for PDFs that have their own text (faster)"
 GLYPHS = {"pending": "•", "running": "▶", "done": "✓", "failed": "✗", "cancelled": "—"}
 
 
@@ -52,6 +55,24 @@ def save_image_settings(path: Path, settings: ImageExportSettings) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def text_layer_report(pdf: str) -> TextLayerReport | None:
+    """The PDF's text-layer report, or None when the file cannot be inspected.
+
+    None means "do not offer to skip OCR": an unreadable file is left for the
+    conversion itself to report, with marker's own error message.
+    """
+    try:
+        return inspect_text_layer(pdf)
+    except Exception:  # noqa: BLE001 - PDFium raises its own types per failure
+        return None
+
+
+def can_skip_ocr(pdf: str) -> bool:
+    """True only when the PDF is readable and has a text layer."""
+    report = text_layer_report(pdf)
+    return report is not None and report.suggest_skip_ocr
 
 
 def iter_stderr(stream) -> Iterator[str]:
@@ -120,7 +141,11 @@ class MarkerWorker:
         return True, self.device
 
     def convert(
-        self, pdf: str, out_dir: str, image_settings: ImageExportSettings | None = None
+        self,
+        pdf: str,
+        out_dir: str,
+        image_settings: ImageExportSettings | None = None,
+        skip_ocr: bool = False,
     ) -> tuple[bool, str]:
         """Convert one PDF. Returns (ok, output path or error detail)."""
         Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -133,6 +158,7 @@ class MarkerWorker:
                     "pdf": str(pdf),
                     "out_dir": str(out_dir),
                     "image_settings": (image_settings or ImageExportSettings()).to_dict(),
+                    "skip_ocr": bool(skip_ocr),
                 }) + "\n"
                 self.proc.stdin.write(request.encode())
                 self.proc.stdin.flush()
@@ -374,19 +400,43 @@ class SingleTab(ttk.Frame):
 
         OutputPicker(self, self.out_path).grid(row=2, column=0, sticky="ew", pady=(12, 0))
 
+        # Offered only once the chosen PDF is found to carry its own text.
+        self.skip_ocr = tk.BooleanVar(value=False)
+        self.ocr_hint = tk.StringVar(value="")
+        ocr_row = ttk.Frame(self)
+        ocr_row.grid(row=3, column=0, sticky="w", pady=(12, 0))
+        self.skip_ocr_box = ttk.Checkbutton(
+            ocr_row, text=SKIP_OCR_LABEL, variable=self.skip_ocr, state="disabled"
+        )
+        self.skip_ocr_box.grid(row=0, column=0, sticky="w")
+        ttk.Label(ocr_row, textvariable=self.ocr_hint, foreground=MUTED).grid(
+            row=1, column=0, sticky="w"
+        )
+
         self.btn = ttk.Button(self, text="Convert", command=self.convert)
-        self.btn.grid(row=3, column=0, pady=(20, 8))
+        self.btn.grid(row=4, column=0, pady=(20, 8))
 
         self.progress = ttk.Progressbar(self, length=420, mode="determinate", maximum=100)
-        self.progress.grid(row=4, column=0, sticky="ew", pady=(4, 6))
+        self.progress.grid(row=5, column=0, sticky="ew", pady=(4, 6))
 
         self.status = tk.StringVar(value="Ready")
-        ttk.Label(self, textvariable=self.status, foreground=MUTED).grid(row=5, column=0, sticky="w")
+        ttk.Label(self, textvariable=self.status, foreground=MUTED).grid(row=6, column=0, sticky="w")
 
     def pick_pdf(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
         if path:
             self.pdf_path.set(path)
+            self._offer_skip_ocr(text_layer_report(path))
+
+    def _offer_skip_ocr(self, report: TextLayerReport | None) -> None:
+        """Enable the Skip OCR choice only for a PDF with a text layer.
+
+        It is never ticked for the user: the hint is the suggestion.
+        """
+        offered = report is not None and report.suggest_skip_ocr
+        self.skip_ocr.set(False)
+        self.skip_ocr_box.config(state="normal" if offered else "disabled")
+        self.ocr_hint.set("" if report is None else report.hint())
 
     def convert(self) -> None:
         pdf = self.pdf_path.get()
@@ -404,10 +454,16 @@ class SingleTab(ttk.Frame):
         self.progress.start(12)  # spin until the first stage reports a count
         self.status.set("Loading models…")
         # Read the Tk variable here: only the main thread may touch Tk state.
-        threading.Thread(target=self._run, args=(pdf, self.out_path.get(), options), daemon=True).start()
+        threading.Thread(
+            target=self._run,
+            args=(pdf, self.out_path.get(), options, self.skip_ocr.get()),
+            daemon=True,
+        ).start()
         self.after(100, self._drain_events)
 
-    def _run(self, pdf: str, out_dir: str, options: ImageExportSettings) -> None:
+    def _run(
+        self, pdf: str, out_dir: str, options: ImageExportSettings, skip_ocr: bool = False
+    ) -> None:
         """Worker thread: convert and push the outcome to the queue."""
         worker = self.app.worker
         worker.emit = lambda kind, payload: self.events.put((kind, payload))
@@ -416,7 +472,7 @@ class SingleTab(ttk.Frame):
             self.events.put(("error", info))
             return
         self.events.put(("status", f"Converting on {info.upper()}…"))
-        ok, detail = worker.convert(pdf, out_dir, options)
+        ok, detail = worker.convert(pdf, out_dir, options, skip_ocr)
         self.events.put(("done" if ok else "error", detail))
 
     def _drain_events(self) -> None:
@@ -503,23 +559,29 @@ class BatchTab(ttk.Frame):
 
         OutputPicker(self, self.out_path).grid(row=3, column=0, sticky="ew", pady=(14, 0))
 
+        # Decided per file as the batch runs: scans in the queue keep their OCR.
+        self.skip_ocr = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self, text=BATCH_SKIP_OCR_LABEL, variable=self.skip_ocr).grid(
+            row=4, column=0, sticky="w", pady=(12, 0)
+        )
+
         actions = ttk.Frame(self)
-        actions.grid(row=4, column=0, pady=(18, 8))
+        actions.grid(row=5, column=0, pady=(18, 8))
         self.btn = ttk.Button(actions, text="Convert All", command=self.convert)
         self.btn.grid(row=0, column=0, padx=(0, 8))
         self.stop_btn = ttk.Button(actions, text="Stop", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1)
 
-        ttk.Label(self, text="Overall", foreground=MUTED).grid(row=5, column=0, sticky="w")
+        ttk.Label(self, text="Overall", foreground=MUTED).grid(row=6, column=0, sticky="w")
         self.overall = ttk.Progressbar(self, length=420, mode="determinate", maximum=100)
-        self.overall.grid(row=6, column=0, sticky="ew", pady=(2, 8))
+        self.overall.grid(row=7, column=0, sticky="ew", pady=(2, 8))
 
-        ttk.Label(self, text="Current file", foreground=MUTED).grid(row=7, column=0, sticky="w")
+        ttk.Label(self, text="Current file", foreground=MUTED).grid(row=8, column=0, sticky="w")
         self.progress = ttk.Progressbar(self, length=420, mode="determinate", maximum=100)
-        self.progress.grid(row=8, column=0, sticky="ew", pady=(2, 6))
+        self.progress.grid(row=9, column=0, sticky="ew", pady=(2, 6))
 
         self.status = tk.StringVar(value="No files queued")
-        ttk.Label(self, textvariable=self.status, foreground=MUTED).grid(row=9, column=0, sticky="w")
+        ttk.Label(self, textvariable=self.status, foreground=MUTED).grid(row=10, column=0, sticky="w")
 
     # ---- file list management -------------------------------------------------
 
@@ -603,7 +665,11 @@ class BatchTab(ttk.Frame):
             b.config(state="disabled")
         self.overall["value"] = 0
         self.status.set("Loading models…")
-        threading.Thread(target=self._run, args=(list(self.files), self.out_path.get(), options), daemon=True).start()
+        threading.Thread(
+            target=self._run,
+            args=(list(self.files), self.out_path.get(), options, self.skip_ocr.get()),
+            daemon=True,
+        ).start()
         self.after(100, self._drain_events)
 
     def stop(self) -> None:
@@ -614,7 +680,13 @@ class BatchTab(ttk.Frame):
         self.stop_btn.config(state="disabled")
         self.app.worker.stop()
 
-    def _run(self, files: list[Path], out_dir: str, options: ImageExportSettings) -> None:
+    def _run(
+        self,
+        files: list[Path],
+        out_dir: str,
+        options: ImageExportSettings,
+        skip_ocr_where_possible: bool = False,
+    ) -> None:
         """Worker thread: convert each queued PDF in turn, models loaded once."""
         worker = self.app.worker
         worker.emit = lambda kind, payload: self.events.put((kind, payload))
@@ -630,7 +702,8 @@ class BatchTab(ttk.Frame):
                 self.events.put(("file_state", (pdf, "cancelled", "")))
             else:
                 self.events.put(("file_start", (pdf, i, len(files))))
-                ok, detail = worker.convert(str(pdf), out_dir, options)
+                skip_ocr = skip_ocr_where_possible and can_skip_ocr(str(pdf))
+                ok, detail = worker.convert(str(pdf), out_dir, options, skip_ocr)
                 if ok:
                     succeeded += 1
                     self.events.put(("file_state", (pdf, "done", detail)))

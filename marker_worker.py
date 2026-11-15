@@ -104,8 +104,29 @@ def apply_tuning() -> dict[str, str]:
     return tuning
 
 
+def converter_options(
+    out_dir: str, options: ImageExportSettings, skip_ocr: bool = False
+) -> dict:
+    """The marker config for one conversion, as a new dict.
+
+    `skip_ocr` turns OCR off entirely: the PDF's own text layer is used as is.
+    The GUI only offers it for PDFs it has found a text layer in.
+    """
+    config = {
+        "output_dir": out_dir,
+        "output_format": "markdown",
+        **options.converter_config(),
+    }
+    return {**config, "disable_ocr": True} if skip_ocr else config
+
+
 def convert_one(
-    models: dict, pdf: str, out_dir: str, on_progress=None, image_settings=None
+    models: dict,
+    pdf: str,
+    out_dir: str,
+    on_progress=None,
+    image_settings=None,
+    skip_ocr: bool = False,
 ) -> str:
     """Convert a single PDF with already-loaded models. Returns the markdown path.
 
@@ -125,11 +146,7 @@ def convert_one(
     options = ImageExportSettings.from_dict(
         {} if image_settings is None else image_settings
     )
-    config_parser = ConfigParser({
-        "output_dir": out_dir,
-        "output_format": "markdown",
-        **options.converter_config(),
-    })
+    config_parser = ConfigParser(converter_options(out_dir, options, skip_ocr))
     converter_cls = progress_converter_cls(config_parser.get_converter_cls())
     converter = converter_cls(
         config=config_parser.generate_config_dict(),
@@ -197,6 +214,7 @@ def main() -> None:
                 request["out_dir"],
                 on_progress=lambda event: reply({"progress": event.as_payload()}),
                 image_settings=request.get("image_settings"),
+                skip_ocr=bool(request.get("skip_ocr", False)),
             )
             logger.info(f"Saved markdown to {out}")
             reply({"ok": True, "out": out})
