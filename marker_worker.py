@@ -6,7 +6,7 @@ multi-file conversion: model loading costs several seconds and would otherwise b
 paid again for every file.
 
 Protocol
-    stdin   {"pdf": "…", "out_dir": "…"}            one request per line
+    stdin   {"pdf": "…", "out_dir": "…", "image_settings": {…}}  per request
     stdout  {"ready": true, "device": "mps", …}     once, after models load
             {"ok": true, "out": "…"}                per request
             {"ok": false, "error": "…"}             per request
@@ -20,6 +20,8 @@ import json
 import os
 import sys
 from pathlib import Path
+
+from marker.image_export import ImageExportSettings
 
 # Batch sizes tuned for Apple Silicon unified memory, keyed by the minimum RAM
 # tier they apply to. surya's MPS defaults (detector 8, layout 4, recognition 64)
@@ -102,7 +104,9 @@ def apply_tuning() -> dict[str, str]:
     return tuning
 
 
-def convert_one(models: dict, pdf: str, out_dir: str, on_progress=None) -> str:
+def convert_one(
+    models: dict, pdf: str, out_dir: str, on_progress=None, image_settings=None
+) -> str:
     """Convert a single PDF with already-loaded models. Returns the markdown path.
 
     `on_progress`, when given, receives a ProgressEvent for each phase the
@@ -118,7 +122,14 @@ def convert_one(models: dict, pdf: str, out_dir: str, on_progress=None) -> str:
         progress_converter_cls,
     )
 
-    config_parser = ConfigParser({"output_dir": out_dir, "output_format": "markdown"})
+    options = ImageExportSettings.from_dict(
+        {} if image_settings is None else image_settings
+    )
+    config_parser = ConfigParser({
+        "output_dir": out_dir,
+        "output_format": "markdown",
+        **options.converter_config(),
+    })
     converter_cls = progress_converter_cls(config_parser.get_converter_cls())
     converter = converter_cls(
         config=config_parser.generate_config_dict(),
@@ -185,6 +196,7 @@ def main() -> None:
                 request["pdf"],
                 request["out_dir"],
                 on_progress=lambda event: reply({"progress": event.as_payload()}),
+                image_settings=request.get("image_settings"),
             )
             logger.info(f"Saved markdown to {out}")
             reply({"ok": True, "out": out})

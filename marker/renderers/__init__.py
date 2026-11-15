@@ -6,7 +6,9 @@ from typing import Annotated, Optional, Tuple, Literal
 
 from bs4 import BeautifulSoup
 from pydantic import BaseModel
+from PIL import Image
 
+from marker.image_export import scaled_image_size
 from marker.schema import BlockTypes
 from marker.schema.blocks.base import BlockId, BlockOutput
 from marker.schema.document import Document
@@ -26,6 +28,12 @@ class BaseRenderer:
         Literal["lowres", "highres"],
         "The mode to use for extracting images.",
     ] = "highres"
+    image_export_scale_percent: Annotated[
+        int, "Resize exported pictures by this percentage after rendering."
+    ] = 100
+    image_export_max_dimension: Annotated[
+        int, "Cap the longest edge of exported pictures in pixels; 0 means no limit."
+    ] = 0
     keep_pageheader_in_output: Annotated[
         bool, "Keep the page header in the output HTML."
     ] = False
@@ -38,6 +46,9 @@ class BaseRenderer:
 
     def __init__(self, config: Optional[BaseModel | dict] = None):
         assign_config(self, config)
+        # Retain at most one additional export page, even in large documents.
+        self._export_page = None
+        self._export_image = None
 
         self.block_config = {
             "keep_pageheader_in_output": self.keep_pageheader_in_output,
@@ -51,9 +62,23 @@ class BaseRenderer:
 
     def extract_image(self, document: Document, image_id, to_base64=False):
         image_block = document.get_block(image_id)
-        cropped = image_block.get_image(
-            document, highres=self.image_extraction_mode == "highres"
+        page = document.get_page(image_block.page_id)
+        if page._export_loader is not None:
+            if self._export_page is not page:
+                self._export_image = None
+                self._export_image = page._export_loader(page.page_id)
+                self._export_page = page
+            bbox = image_block.polygon.rescale(page.polygon.size, self._export_image.size)
+            cropped = self._export_image.crop(bbox.bbox)
+        else:
+            cropped = image_block.get_image(
+                document, highres=self.image_extraction_mode == "highres"
+            )
+        size = scaled_image_size(
+            cropped.size, self.image_export_scale_percent, self.image_export_max_dimension
         )
+        if size != cropped.size:
+            cropped = cropped.resize(size, Image.Resampling.LANCZOS)
 
         if to_base64:
             image_buffer = io.BytesIO()

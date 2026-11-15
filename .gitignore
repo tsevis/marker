@@ -1,6 +1,7 @@
 private.py
 .DS_Store
 local.env
+.marker-gui-settings.json
 experiments
 test_data
 training

@@ -22,6 +22,13 @@ long batch runs. It is personal tooling, not a competing distribution: if you wa
 
 - A Tkinter front end for single-file and batch conversion, so a conversion does not need a
   terminal.
+- A **Settings** tab for photo exports: choose 72–600 DPI, scale to 10–400%, and optionally
+  cap the longest edge in pixels. The size example updates as you edit. Settings are saved
+  when you click **Save settings** or start a conversion, and remembered across restarts in
+  `.marker-gui-settings.json` beside the GUI. Each batch keeps the settings it started with.
+  Defaults match the previous exports: 192 DPI, 100% scale, no pixel limit. DPI controls
+  export rendering independently of OCR; scaling is applied afterward, preserving proportions.
+  Photos are still rendered PDF crops saved as JPEG, rather than original embedded image files.
 - A persistent worker process that loads the models once and converts many files, instead of
   paying model load on every file.
 - Apple Silicon tuning — batch sizes and detector workers chosen from available unified memory.

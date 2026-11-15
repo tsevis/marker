@@ -41,13 +41,6 @@ class HTMLRenderer(BaseRenderer):
         "Whether to paginate the output.",
     ] = False
 
-    def extract_image(self, document, image_id):
-        image_block = document.get_block(image_id)
-        cropped = image_block.get_image(
-            document, highres=self.image_extraction_mode == "highres"
-        )
-        return cropped
-
     def insert_block_id(self, soup, block_id: BlockId):
         """
         Insert a block ID into the soup as a data attribute.

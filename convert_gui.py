@@ -4,16 +4,20 @@ import re
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 from typing import Callable, Iterator
 
+from marker.image_export import ImageExportSettings, scaled_image_size
+
 ROOT = Path(__file__).parent
 VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
 WORKER_SCRIPT = ROOT / "marker_worker.py"
 DEFAULT_OUTPUT = ROOT / "output"
+SETTINGS_FILE = ROOT / ".marker-gui-settings.json"
 
 # Matches a tqdm progress line on stderr, e.g.
 #   "Recognizing Layout: 100%|██████| 3/10 [00:04<00:00, 4.07s/it]"
@@ -23,6 +27,31 @@ DONE_RE = re.compile(r"Saved markdown to (?P<path>.+)$")
 
 MUTED = "#6b7280"
 GLYPHS = {"pending": "•", "running": "▶", "done": "✓", "failed": "✗", "cancelled": "—"}
+
+
+def load_image_settings(path: Path) -> tuple[ImageExportSettings, str]:
+    try:
+        return ImageExportSettings.from_dict(json.loads(path.read_text())), ""
+    except FileNotFoundError:
+        return ImageExportSettings(), ""
+    except (OSError, ValueError) as exc:
+        return ImageExportSettings(), f"Could not load saved settings; using defaults. {exc}"
+
+
+def save_image_settings(path: Path, settings: ImageExportSettings) -> None:
+    """Replace preferences atomically so a stopped GUI cannot truncate them."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(settings.to_dict(), stream, indent=2)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def iter_stderr(stream) -> Iterator[str]:
@@ -90,7 +119,9 @@ class MarkerWorker:
         self.device = handshake.get("device", "?")
         return True, self.device
 
-    def convert(self, pdf: str, out_dir: str) -> tuple[bool, str]:
+    def convert(
+        self, pdf: str, out_dir: str, image_settings: ImageExportSettings | None = None
+    ) -> tuple[bool, str]:
         """Convert one PDF. Returns (ok, output path or error detail)."""
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         # Held across the reply too: one request may be in flight at a time.
@@ -98,7 +129,11 @@ class MarkerWorker:
             if not self.alive:
                 return False, "Worker is not running."
             try:
-                request = json.dumps({"pdf": str(pdf), "out_dir": str(out_dir)}) + "\n"
+                request = json.dumps({
+                    "pdf": str(pdf),
+                    "out_dir": str(out_dir),
+                    "image_settings": (image_settings or ImageExportSettings()).to_dict(),
+                }) + "\n"
                 self.proc.stdin.write(request.encode())
                 self.proc.stdin.flush()
             except (BrokenPipeError, OSError) as e:
@@ -183,6 +218,141 @@ class OutputPicker(ttk.Frame):
             self.variable.set(path)
 
 
+class SettingsTab(ttk.Frame):
+    """Export preferences shared by single-file and batch conversion."""
+
+    def __init__(self, master: tk.Misc, app: "App", load_warning: str = ""):
+        super().__init__(master, padding=16)
+        self.app = app
+        self.columnconfigure(0, weight=1)
+        options = app.image_settings
+        self.dpi = tk.StringVar(value=str(options.dpi))
+        self.scale = tk.StringVar(value=str(options.scale_percent))
+        self.limit_enabled = tk.BooleanVar(value=bool(options.max_dimension))
+        self.max_dimension = tk.StringVar(value=str(options.max_dimension or 2400))
+        self.preview = tk.StringVar()
+        self.status = tk.StringVar(value=load_warning)
+
+        ttk.Label(self, text="Photo export", font=("TkDefaultFont", 15, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            self, text="Shared by Single and Batch. Changes apply to the next conversion.",
+            foreground=MUTED,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 18))
+
+        fields = ttk.Frame(self)
+        fields.grid(row=2, column=0, sticky="ew")
+        fields.columnconfigure(1, weight=1)
+        ttk.Label(fields, text="Resolution (DPI)").grid(row=0, column=0, sticky="w", padx=(0, 20))
+        ttk.Combobox(
+            fields, textvariable=self.dpi, values=(72, 96, 150, 192, 300, 450, 600), width=12,
+        ).grid(row=0, column=1, sticky="w")
+        ttk.Label(
+            fields, text="Choose a preset or enter 72–600. Default: 192 DPI.", foreground=MUTED,
+        ).grid(row=1, column=1, sticky="w", pady=(3, 14))
+
+        ttk.Label(fields, text="Scale (%)").grid(row=2, column=0, sticky="w")
+        ttk.Combobox(
+            fields, textvariable=self.scale, values=(25, 50, 75, 100, 150, 200, 400), width=12,
+        ).grid(row=2, column=1, sticky="w")
+        ttk.Label(
+            fields, text="10–400%. 100% keeps the dimensions rendered at your DPI.",
+            foreground=MUTED,
+        ).grid(row=3, column=1, sticky="w", pady=(3, 14))
+
+        ttk.Checkbutton(
+            fields, text="Limit longest edge", variable=self.limit_enabled,
+        ).grid(row=4, column=0, sticky="w", padx=(0, 20))
+        limit_row = ttk.Frame(fields)
+        limit_row.grid(row=4, column=1, sticky="w")
+        self.limit_entry = ttk.Spinbox(
+            limit_row, textvariable=self.max_dimension, from_=1, to=20000, increment=100, width=12,
+        )
+        self.limit_entry.pack(side="left")
+        ttk.Label(limit_row, text="pixels").pack(side="left", padx=(8, 0))
+        ttk.Label(
+            fields, text="Shrinks images that exceed the limit; keeps their proportions.", foreground=MUTED,
+        ).grid(row=5, column=1, sticky="w", pady=(3, 14))
+
+        example = ttk.LabelFrame(self, text="Size example", padding=12)
+        example.grid(row=3, column=0, sticky="ew", pady=(2, 14))
+        ttk.Label(example, text="A photo measuring 4 × 3 inches on the PDF page:").pack(anchor="w")
+        ttk.Label(example, textvariable=self.preview, font=("TkDefaultFont", 13, "bold")).pack(
+            anchor="w", pady=(6, 0)
+        )
+        ttk.Label(
+            self, wraplength=630, foreground=MUTED,
+            text="Photos are cropped from PDF pages and saved as JPEG. Higher DPI can retain more "
+                 "source detail and uses more time and memory. Scaling above 100% enlarges pixels; "
+                 "it does not recover original detail. OCR resolution stays the same.",
+        ).grid(row=4, column=0, sticky="w", pady=(0, 14))
+
+        buttons = ttk.Frame(self)
+        buttons.grid(row=5, column=0, sticky="w")
+        ttk.Button(buttons, text="Save settings", command=self.apply).pack(side="left")
+        ttk.Button(buttons, text="Restore defaults", command=self.restore_defaults).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            self, text="Settings are remembered when saved or when a conversion starts.", foreground=MUTED,
+        ).grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(self, textvariable=self.status, wraplength=630).grid(
+            row=7, column=0, sticky="w", pady=(6, 0)
+        )
+        for variable in (self.dpi, self.scale, self.limit_enabled, self.max_dimension):
+            variable.trace_add("write", self._changed)
+        self._update_preview()
+
+    def read(self) -> ImageExportSettings:
+        try:
+            dpi, scale = int(self.dpi.get()), int(self.scale.get())
+            limit = int(self.max_dimension.get()) if self.limit_enabled.get() else 0
+        except ValueError:
+            raise ValueError("Enter whole numbers for resolution, scale and the pixel limit.") from None
+        if self.limit_enabled.get() and limit == 0:
+            raise ValueError("The longest-edge limit must be at least 1 pixel, or turn the limit off.")
+        return ImageExportSettings(dpi, scale, limit)
+
+    def _update_preview(self) -> None:
+        self.limit_entry.config(state="normal" if self.limit_enabled.get() else "disabled")
+        try:
+            options = self.read()
+            width, height = scaled_image_size(
+                (4 * options.dpi, 3 * options.dpi), options.scale_percent, options.max_dimension
+            )
+            self.preview.set(f"Approximately {width:,} × {height:,} pixels")
+        except ValueError:
+            self.preview.set("Enter valid settings to preview the size.")
+
+    def _changed(self, *_args) -> None:
+        self.status.set("Changes will be saved when you start a conversion or click Save settings.")
+        self._update_preview()
+
+    def apply(self) -> ImageExportSettings | None:
+        try:
+            options = self.read()
+        except ValueError as exc:
+            self.app.notebook.select(self)
+            messagebox.showerror("Invalid export settings", str(exc), parent=self)
+            return None
+        try:
+            save_image_settings(self.app.settings_path, options)
+        except OSError as exc:
+            messagebox.showerror("Could not save settings", str(exc), parent=self)
+            return None
+        self.app.image_settings = options
+        self.app.export_summary.set(options.summary())
+        self.status.set("Settings saved. They apply to the next conversion or batch.")
+        return options
+
+    def restore_defaults(self) -> None:
+        options = ImageExportSettings()
+        self.dpi.set(str(options.dpi))
+        self.scale.set(str(options.scale_percent))
+        self.limit_enabled.set(False)
+        self.max_dimension.set("2400")
+        self.apply()
+
+
 class SingleTab(ttk.Frame):
     """Convert one PDF at a time."""
 
@@ -223,6 +393,9 @@ class SingleTab(ttk.Frame):
         if pdf == "No file selected" or not Path(pdf).exists():
             messagebox.showerror("Error", "Please select a valid PDF file.")
             return
+        options = self.app.settings_tab.apply()
+        if options is None:
+            return
         if not self.app.claim_worker():
             return
 
@@ -231,10 +404,10 @@ class SingleTab(ttk.Frame):
         self.progress.start(12)  # spin until the first stage reports a count
         self.status.set("Loading models…")
         # Read the Tk variable here: only the main thread may touch Tk state.
-        threading.Thread(target=self._run, args=(pdf, self.out_path.get()), daemon=True).start()
+        threading.Thread(target=self._run, args=(pdf, self.out_path.get(), options), daemon=True).start()
         self.after(100, self._drain_events)
 
-    def _run(self, pdf: str, out_dir: str) -> None:
+    def _run(self, pdf: str, out_dir: str, options: ImageExportSettings) -> None:
         """Worker thread: convert and push the outcome to the queue."""
         worker = self.app.worker
         worker.emit = lambda kind, payload: self.events.put((kind, payload))
@@ -243,7 +416,7 @@ class SingleTab(ttk.Frame):
             self.events.put(("error", info))
             return
         self.events.put(("status", f"Converting on {info.upper()}…"))
-        ok, detail = worker.convert(pdf, out_dir)
+        ok, detail = worker.convert(pdf, out_dir, options)
         self.events.put(("done" if ok else "error", detail))
 
     def _drain_events(self) -> None:
@@ -414,6 +587,9 @@ class BatchTab(ttk.Frame):
         if missing:
             messagebox.showerror("Error", "These files no longer exist:\n" + "\n".join(m.name for m in missing))
             return
+        options = self.app.settings_tab.apply()
+        if options is None:
+            return
         if not self.app.claim_worker():
             return
 
@@ -427,7 +603,7 @@ class BatchTab(ttk.Frame):
             b.config(state="disabled")
         self.overall["value"] = 0
         self.status.set("Loading models…")
-        threading.Thread(target=self._run, args=(list(self.files), self.out_path.get()), daemon=True).start()
+        threading.Thread(target=self._run, args=(list(self.files), self.out_path.get(), options), daemon=True).start()
         self.after(100, self._drain_events)
 
     def stop(self) -> None:
@@ -438,7 +614,7 @@ class BatchTab(ttk.Frame):
         self.stop_btn.config(state="disabled")
         self.app.worker.stop()
 
-    def _run(self, files: list[Path], out_dir: str) -> None:
+    def _run(self, files: list[Path], out_dir: str, options: ImageExportSettings) -> None:
         """Worker thread: convert each queued PDF in turn, models loaded once."""
         worker = self.app.worker
         worker.emit = lambda kind, payload: self.events.put((kind, payload))
@@ -454,7 +630,7 @@ class BatchTab(ttk.Frame):
                 self.events.put(("file_state", (pdf, "cancelled", "")))
             else:
                 self.events.put(("file_start", (pdf, i, len(files))))
-                ok, detail = worker.convert(str(pdf), out_dir)
+                ok, detail = worker.convert(str(pdf), out_dir, options)
                 if ok:
                     succeeded += 1
                     self.events.put(("file_state", (pdf, "done", detail)))
@@ -529,18 +705,25 @@ class BatchTab(ttk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self, settings_path: Path = SETTINGS_FILE):
         super().__init__()
         self.title("PDF → Markdown with Marker")
-        self.minsize(560, 300)
+        self.minsize(720, 640)
         self.busy = False  # one conversion at a time — the worker is single-threaded
         self.worker = MarkerWorker()
+        self.settings_path = settings_path
+        self.image_settings, load_warning = load_image_settings(settings_path)
+        self.export_summary = tk.StringVar(value=self.image_settings.summary())
 
         notebook = ttk.Notebook(self)
+        self.notebook = notebook
         notebook.pack(fill="both", expand=True, padx=12, pady=(12, 0))
         notebook.add(SingleTab(notebook, self), text="Single")
         notebook.add(BatchTab(notebook, self), text="Batch")
+        self.settings_tab = SettingsTab(notebook, self, load_warning)
+        notebook.add(self.settings_tab, text="Settings")
 
+        ttk.Label(self, textvariable=self.export_summary).pack(anchor="w", padx=16, pady=(8, 0))
         ttk.Label(self, text=self._tuning_summary(), foreground=MUTED).pack(
             anchor="w", padx=16, pady=(6, 10)
         )

@@ -24,6 +24,10 @@ class DocumentBuilder(BaseBuilder):
         int,
         "DPI setting for high-resolution page images used for OCR.",
     ] = 192
+    image_export_dpi: Annotated[
+        int,
+        "Resolution for exported pictures, independent of OCR. 0 uses the existing extraction mode.",
+    ] = 0
     disable_ocr: Annotated[
         bool,
         "Disable OCR processing.",
@@ -104,6 +108,15 @@ class DocumentBuilder(BaseBuilder):
                 pdftext_page=getattr(provider, "raw_pdftext_pages", {}).get(p),
             )
             page._highres_loader = loader
+            if self.image_export_dpi:
+                def export_loader(page_id, page=page, prov=provider):
+                    if self.image_export_dpi == self.highres_image_dpi:
+                        return page.get_image(highres=True)
+                    if self.image_export_dpi == self.lowres_image_dpi:
+                        return page.get_image(highres=False)
+                    return prov.get_images([page_id], self.image_export_dpi)[0]
+
+                page._export_loader = export_loader
             initial_pages.append(page)
         DocumentClass: Document = get_block_class(BlockTypes.Document)
         return DocumentClass(filepath=provider.filepath, pages=initial_pages)

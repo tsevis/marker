@@ -38,6 +38,8 @@ class PageGroup(Group):
     # opens/renders/closes the PDF per call). Set by DocumentBuilder so clean
     # text-only pages, which never need high-res, skip the upfront render.
     _highres_loader: Optional[Callable[[int], Image.Image]] = PrivateAttr(default=None)
+    # Export-only rendering keeps photo resolution independent of OCR images.
+    _export_loader: Optional[Callable[[int], Image.Image]] = PrivateAttr(default=None)
 
     def incr_block_id(self):
         if self.block_id is None:
